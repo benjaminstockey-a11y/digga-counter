@@ -215,7 +215,10 @@ class ListeningService : Service() {
      * trigger word plus a few common misheard spellings, not just an exact substring match.
      */
     private fun containsTriggerWord(transcript: String): Boolean {
-        val variants = listOf(Config.TRIGGER_WORD, "digger", "dicka", "ticka", "diggah", "diggar")
+        val variants = listOf(
+            Config.TRIGGER_WORD, "digger", "dicka", "ticka", "diggah", "diggar",
+            "dicker", "ticker", "diggeh", "diga", "digge"
+        )
         return variants.any { transcript.contains(it) }
     }
 

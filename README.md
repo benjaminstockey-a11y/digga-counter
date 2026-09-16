@@ -17,28 +17,17 @@ per +/- ändern.
    - Kostenlosen Account auf [console.picovoice.ai](https://console.picovoice.ai) anlegen
    - AccessKey kopieren, in `Config.kt` bei `PICOVOICE_ACCESS_KEY` eintragen
 
-3. **GitHub-Repo für Auto-Update**
-   - Dieses Projekt in ein **eigenes, privates** GitHub-Repo pushen (siehe unten)
-   - In `Config.kt` bei `GITHUB_REPO` `"deinuser/digga-counter"` eintragen
+3. **GitHub-Repo für Auto-Update** — bereits erledigt
+   - Code liegt in [github.com/benjaminstockey-a11y/digga-counter](https://github.com/benjaminstockey-a11y/digga-counter)
+     (öffentlich, damit die App die Releases-API ohne Login abfragen kann)
    - Bei jedem Push auf `main` baut `.github/workflows/release-apk.yml` automatisch eine
      signierte APK und veröffentlicht sie als GitHub Release. Die App prüft beim Start,
      ob eine neuere Version verfügbar ist, und bietet Download + Installation an
      (Android verlangt dafür immer eine Bestätigung durch den Nutzer - kein stilles
      Auto-Install).
-
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   git branch -M main
-   git remote add origin https://github.com/DEIN_USER/digga-counter.git
-   git push -u origin main
-   ```
-
-   Hinweis: `app/digga-release.keystore` ist absichtlich mit eingecheckt, damit jeder
-   CI-Build mit demselben Schlüssel signiert wird (sonst schlägt die Update-Installation
-   über eine bestehende Version fehl). Das ist nur für ein privates Repo zum
-   Eigengebrauch gedacht - kein Ersatz für einen echten Play-Store-Signing-Key.
+   - Der Signing-Keystore liegt **nicht** im Repo, sondern als vier verschlüsselte
+     GitHub-Actions-Secrets (`RELEASE_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`,
+     `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`) im Repo hinterlegt.
 
 ## Nutzung
 

@@ -21,5 +21,5 @@ object Config {
     // "owner/repo" of the public GitHub repo that .github/workflows/release-apk.yml
     // publishes a new APK release to on every push to main. The app polls this repo's
     // latest release to auto-update itself.
-    const val GITHUB_REPO = "PUT_YOUR_GITHUB_USERNAME/digga-counter"
+    const val GITHUB_REPO = "benjaminstockey-a11y/digga-counter"
 }

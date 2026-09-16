@@ -16,9 +16,8 @@ import androidx.core.app.NotificationCompat
 import com.example.diggacounter.Config
 import com.example.diggacounter.R
 import com.example.diggacounter.data.AppDatabase
+import com.example.diggacounter.data.Person
 import com.example.diggacounter.data.PersonRepository
-import com.example.diggacounter.speech.SpeakerIdentifier
-import com.example.diggacounter.speech.SpeakerTracker
 import kotlinx.coroutines.*
 
 /**
@@ -27,12 +26,13 @@ import kotlinx.coroutines.*
  * where the device has an offline language pack installed, otherwise falls back to
  * Google's standard free voice recognition).
  *
- * Speaker identification runs from a *separate*, independent microphone recording
- * ([SpeakerTracker]) rather than the recognizer's own audio: [RecognitionListener.onBufferReceived]
- * is documented as optional and doesn't fire on every device, which left speaker ID
- * completely blind on some phones. When a recognized transcript contains "Digga" and the
- * tracker's rolling window confidently points to one enrolled person, that person is
- * booked 50 cents.
+ * Automatic *speaker* identification turned out to be unreliable across devices (the
+ * recognizer's own audio buffer callback is optional and doesn't fire everywhere, and
+ * recording the mic ourselves at the same time starves the recognizer of audio on devices
+ * that don't support concurrent capture). So instead: when "Digga" is heard, if there's
+ * exactly one enrolled person they're credited automatically; with several people, a
+ * notification with one tap-to-confirm button per person is shown - reliable on every
+ * device since it doesn't depend on voice matching at all.
  */
 class ListeningService : Service() {
 
@@ -41,9 +41,9 @@ class ListeningService : Service() {
 
     private lateinit var repository: PersonRepository
     private var speechRecognizer: SpeechRecognizer? = null
-    private var speakerIdentifier: SpeakerIdentifier? = null
-    private var speakerTracker: SpeakerTracker? = null
+    private var knownPersons: List<Person> = emptyList()
     private val audioManager: AudioManager by lazy { getSystemService(AUDIO_SERVICE) as AudioManager }
+    private var attributionNotificationId = ATTRIBUTION_NOTIFICATION_ID_BASE
 
     override fun onCreate() {
         super.onCreate()
@@ -54,19 +54,9 @@ class ListeningService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
         if (speechRecognizer == null) {
             serviceScope.launch {
-                val persons = repository.getAll()
-                val profileFiles = persons
-                    .filter { it.voiceProfilePath != null }
-                    .associate { it.id to java.io.File(it.voiceProfilePath!!) }
-
+                knownPersons = repository.getAll()
                 withContext(Dispatchers.Main) {
                     try {
-                        // No enrolled voices yet -> nobody to attribute "Digga" to.
-                        if (profileFiles.isNotEmpty()) {
-                            val identifier = SpeakerIdentifier(applicationContext, profileFiles)
-                            speakerIdentifier = identifier
-                            speakerTracker = SpeakerTracker(identifier, serviceScope).apply { start() }
-                        }
                         startRecognizer()
                     } catch (e: Exception) {
                         android.widget.Toast.makeText(
@@ -87,12 +77,9 @@ class ListeningService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         mainHandler.removeCallbacksAndMessages(null)
-        speakerTracker?.stop()
-        speakerTracker = null
         serviceScope.cancel()
         speechRecognizer?.destroy()
         speechRecognizer = null
-        speakerIdentifier = null
         setBeepMuted(false)
     }
 
@@ -180,26 +167,68 @@ class ListeningService : Service() {
                 ?: emptyList()
 
             val heard = alternatives.firstOrNull()
-            val triggered = alternatives.any { containsTriggerWord(it) }
-            if (triggered) {
-                val tracker = speakerTracker
-                val matchedSpeaker = tracker?.mostLikelySpeaker()
-                if (matchedSpeaker != null) {
-                    serviceScope.launch { repository.registerDigga(matchedSpeaker) }
-                    updateNotification(heard, debugSuffix = " -> gebucht!")
-                } else {
-                    val identifier = speakerIdentifier
-                    val reason = when {
-                        identifier == null -> "keine Stimme trainiert"
-                        tracker == null || tracker.framesCaptured == 0 -> "eigene Audioaufnahme liefert keine Daten"
-                        else -> "beste Ähnlichkeit nur ${(identifier.lastBestScore * 100).toInt()}%"
-                    }
-                    updateNotification(heard, debugSuffix = " -> nicht gebucht ($reason)")
-                }
+            if (alternatives.any { containsTriggerWord(it) }) {
+                handleTrigger()
+                updateNotification(heard)
             } else {
                 updateNotification(heard)
             }
             listenOnce()
+        }
+    }
+
+    private fun handleTrigger() {
+        when (knownPersons.size) {
+            0 -> return // nobody to credit
+            1 -> serviceScope.launch { repository.registerDigga(knownPersons.first().id) }
+            else -> showAttributionPrompt()
+        }
+    }
+
+    /** Notification with one tap-to-confirm action button per enrolled person - the
+     * reliable fallback since automatic voice matching didn't hold up across devices. */
+    private fun showAttributionPrompt() {
+        val notificationId = attributionNotificationId++
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        ensureAttributionChannel(manager)
+
+        val builder = NotificationCompat.Builder(this, ATTRIBUTION_CHANNEL_ID)
+            .setContentTitle("Wer hat \"Digga\" gesagt?")
+            .setContentText("Antippen um 50 Cent zu buchen")
+            .setSmallIcon(R.drawable.ic_mic)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setTimeoutAfter(30_000)
+
+        // Notifications reliably render at most a handful of action buttons.
+        for (person in knownPersons.take(4)) {
+            val intent = Intent(this, DiggaAttributionReceiver::class.java).apply {
+                putExtra(DiggaAttributionReceiver.EXTRA_PERSON_ID, person.id)
+                putExtra(DiggaAttributionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                this,
+                (notificationId * 100 + person.id).toInt(),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(0, "War ${person.name}", pendingIntent)
+        }
+
+        manager.notify(notificationId, builder.build())
+    }
+
+    private fun ensureAttributionChannel(manager: NotificationManager) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            manager.getNotificationChannel(ATTRIBUTION_CHANNEL_ID) == null
+        ) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    ATTRIBUTION_CHANNEL_ID,
+                    "Digga-Zuordnung",
+                    NotificationManager.IMPORTANCE_HIGH
+                )
+            )
         }
     }
 
@@ -216,12 +245,12 @@ class ListeningService : Service() {
     }
 
     /** Shows the last thing Android's recognizer actually understood - handy for checking
-     * why "Digga" isn't being detected (wrong spelling heard, no speech captured, etc.). */
-    private fun updateNotification(lastHeard: String?, debugSuffix: String = "") {
+     * whether "Digga" is being heard at all and roughly how it gets transcribed. */
+    private fun updateNotification(lastHeard: String?) {
         val text = if (lastHeard.isNullOrBlank()) {
             "Hört zu und zählt 'Digga' pro Person"
         } else {
-            "Zuletzt verstanden: \"$lastHeard\"$debugSuffix"
+            "Zuletzt verstanden: \"$lastHeard\""
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager?.notify(NOTIFICATION_ID, buildNotification(text))
@@ -247,6 +276,8 @@ class ListeningService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 42
+        private const val ATTRIBUTION_NOTIFICATION_ID_BASE = 1000
+        private const val ATTRIBUTION_CHANNEL_ID = "digga_attribution"
 
         fun start(context: Context) {
             val intent = Intent(context, ListeningService::class.java)

@@ -6,7 +6,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
@@ -24,7 +23,6 @@ fun PersonListScreen(
     onAddPerson: (String) -> Unit,
     onDeletePerson: (Person) -> Unit,
     onAdjust: (Person, Int) -> Unit,
-    onTrainVoice: (Person) -> Unit,
     onToggleListening: () -> Unit
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
@@ -49,12 +47,19 @@ fun PersonListScreen(
                 Text(if (isListening) "Zuhören stoppen" else "Zuhören starten")
             }
 
+            if (persons.size > 1) {
+                Text(
+                    text = "Bei mehreren Personen fragt eine Benachrichtigung nach, wer \"Digga\" gesagt hat.",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+
             LazyColumn(Modifier.fillMaxSize()) {
                 items(persons, key = { it.id }) { person ->
                     PersonRow(
                         person = person,
                         onAdjust = { steps -> onAdjust(person, steps) },
-                        onTrainVoice = { onTrainVoice(person) },
                         onDelete = { onDeletePerson(person) }
                     )
                     Divider()
@@ -75,7 +80,6 @@ fun PersonListScreen(
 private fun PersonRow(
     person: Person,
     onAdjust: (Int) -> Unit,
-    onTrainVoice: () -> Unit,
     onDelete: () -> Unit
 ) {
     Row(
@@ -88,15 +92,6 @@ private fun PersonRow(
                 text = formatEuro(person.balanceCents),
                 style = MaterialTheme.typography.bodyLarge
             )
-            Text(
-                text = if (person.voiceProfilePath != null) "Stimme trainiert" else "Stimme nicht trainiert",
-                style = MaterialTheme.typography.bodySmall,
-                color = if (person.voiceProfilePath != null)
-                    MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-            )
-        }
-        IconButton(onClick = onTrainVoice) {
-            Icon(Icons.Default.Mic, contentDescription = "Stimme trainieren")
         }
         OutlinedButton(onClick = { onAdjust(-1) }) { Text("−50¢") }
         Spacer(Modifier.width(4.dp))

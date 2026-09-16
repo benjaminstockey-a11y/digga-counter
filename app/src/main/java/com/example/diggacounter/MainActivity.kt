@@ -16,12 +16,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
-import com.example.diggacounter.data.Person
 import com.example.diggacounter.listening.ListeningService
 import com.example.diggacounter.ui.DiggaViewModel
 import com.example.diggacounter.ui.PersonListScreen
 import com.example.diggacounter.ui.UpdateAvailableDialog
-import com.example.diggacounter.ui.VoiceTrainingDialog
 import com.example.diggacounter.update.ApkInstaller
 import com.example.diggacounter.update.UpdateChecker
 import com.example.diggacounter.update.UpdateInfo
@@ -48,7 +46,6 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var isListening by remember { mutableStateOf(false) }
-            var trainingPerson by remember { mutableStateOf<Person?>(null) }
             var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
             val persons by viewModel.persons.collectAsState()
             val scope = rememberCoroutineScope()
@@ -67,7 +64,6 @@ class MainActivity : ComponentActivity() {
                         onAddPerson = viewModel::addPerson,
                         onDeletePerson = viewModel::deletePerson,
                         onAdjust = { person, steps -> viewModel.adjustBalance(person.id, steps) },
-                        onTrainVoice = { person -> trainingPerson = person },
                         onToggleListening = {
                             if (!hasRequiredPermissions()) {
                                 requestPermissions.launch(
@@ -90,18 +86,6 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     )
-
-                    trainingPerson?.let { person ->
-                        VoiceTrainingDialog(
-                            personId = person.id,
-                            personName = person.name,
-                            onDone = { path ->
-                                viewModel.setVoiceProfilePath(person.id, path)
-                                trainingPerson = null
-                            },
-                            onDismiss = { trainingPerson = null }
-                        )
-                    }
 
                     availableUpdate?.let { update ->
                         UpdateAvailableDialog(

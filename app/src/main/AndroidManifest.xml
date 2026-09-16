@@ -41,5 +41,9 @@
             android:foregroundServiceType="microphone"
             android:exported="false" />
 
+        <receiver
+            android:name=".listening.DiggaAttributionReceiver"
+            android:exported="false" />
+
     </application>
 </manifest>

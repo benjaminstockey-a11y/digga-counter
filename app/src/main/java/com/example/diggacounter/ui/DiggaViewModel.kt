@@ -31,8 +31,4 @@ class DiggaViewModel(application: Application) : AndroidViewModel(application) {
     fun adjustBalance(personId: Long, steps: Int) {
         viewModelScope.launch { repository.adjustBalance(personId, steps) }
     }
-
-    fun setVoiceProfilePath(personId: Long, path: String?) {
-        viewModelScope.launch { repository.setVoiceProfilePath(personId, path) }
-    }
 }

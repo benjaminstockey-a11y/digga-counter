@@ -7,9 +7,6 @@ package com.example.diggacounter
  * Speech-to-Text through your own backend instead.
  */
 object Config {
-    // Create a free AccessKey at https://console.picovoice.ai
-    const val PICOVOICE_ACCESS_KEY = "PUT_YOUR_PICOVOICE_ACCESS_KEY_HERE"
-
     // The word/phrase that triggers a charge. Matched case-insensitively against
     // the Google transcript.
     const val TRIGGER_WORD = "digga"

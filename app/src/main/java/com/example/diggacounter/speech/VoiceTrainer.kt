@@ -1,59 +1,74 @@
 package com.example.diggacounter.speech
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
- * Records live microphone audio at whatever sample rate Eagle requires and feeds it into
- * an [EagleSpeakerId.Enroller] until enrollment reaches 100%, then saves the resulting
- * voice profile for that person.
+ * Records a few seconds of one person's voice, extracts a spectral feature vector for
+ * each voiced (non-silent) frame, and averages them into a single voiceprint saved to
+ * disk - no external service or account involved.
  */
 object VoiceTrainer {
+
+    private const val SAMPLE_RATE = 16000
+    private const val TARGET_VOICED_FRAMES = 80 // ~5s of actual speech at 64ms/frame
 
     @SuppressLint("MissingPermission")
     suspend fun train(
         context: Context,
         personId: Long,
         onProgress: (Float) -> Unit
-    ): java.io.File = withContext(Dispatchers.IO) {
-        val enroller = EagleSpeakerId.Enroller(context)
-        val chunkSize = enroller.minEnrollSamples
+    ): File = withContext(Dispatchers.IO) {
+        val frameSize = AudioFeatures.FRAME_SIZE
         val minBuf = AudioRecord.getMinBufferSize(
-            enroller.sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+            SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
         val audioRecord = AudioRecord(
             MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            enroller.sampleRate,
+            SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
-            maxOf(minBuf, chunkSize * 2)
+            maxOf(minBuf, frameSize * 4)
         )
 
-        val outFile = EagleSpeakerId.profileFile(context, personId)
+        val outFile = VoiceProfileStore.profileFile(context, personId)
+        val sum = FloatArray(24) // must match AudioFeatures band count
+        var voicedFrames = 0
+
         try {
             audioRecord.startRecording()
-            var progress = 0f
-            val chunk = ShortArray(chunkSize)
-            while (progress < 100f) {
+            val frame = ShortArray(frameSize)
+            while (voicedFrames < TARGET_VOICED_FRAMES) {
                 var offset = 0
-                while (offset < chunk.size) {
-                    val read = audioRecord.read(chunk, offset, chunk.size - offset)
+                while (offset < frame.size) {
+                    val read = audioRecord.read(frame, offset, frame.size - offset)
                     if (read <= 0) break
                     offset += read
                 }
-                progress = enroller.enrollChunk(chunk)
-                onProgress(progress)
+                if (AudioFeatures.rms(frame) >= AudioFeatures.SILENCE_RMS_THRESHOLD) {
+                    val features = AudioFeatures.extract(frame, SAMPLE_RATE)
+                    for (i in features.indices) sum[i] += features[i]
+                    voicedFrames++
+                    onProgress(voicedFrames * 100f / TARGET_VOICED_FRAMES)
+                }
             }
-            enroller.exportAndSave(outFile)
+
+            val average = FloatArray(sum.size) { sum[it] / voicedFrames }
+            var norm = 0f
+            for (v in average) norm += v * v
+            norm = kotlin.math.sqrt(norm)
+            if (norm > 1e-6f) for (i in average.indices) average[i] /= norm
+
+            VoiceProfileStore.save(outFile, average)
         } finally {
             audioRecord.stop()
             audioRecord.release()
-            enroller.close()
         }
         outFile
     }

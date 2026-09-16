@@ -79,8 +79,5 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.json:json:20240303")
 
-    // Picovoice Eagle - speaker identification against enrolled voice profiles
-    implementation("ai.picovoice:eagle-android:1.0.0")
-
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

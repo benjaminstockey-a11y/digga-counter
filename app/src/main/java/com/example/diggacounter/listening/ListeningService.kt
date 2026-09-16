@@ -16,7 +16,7 @@ import com.example.diggacounter.Config
 import com.example.diggacounter.R
 import com.example.diggacounter.data.AppDatabase
 import com.example.diggacounter.data.PersonRepository
-import com.example.diggacounter.speech.EagleSpeakerId
+import com.example.diggacounter.speech.SpeakerIdentifier
 import kotlinx.coroutines.*
 
 /**
@@ -26,10 +26,10 @@ import kotlinx.coroutines.*
  * Google's standard free voice recognition).
  *
  * SpeechRecognizer also hands us the raw 16-bit PCM audio it's listening to via
- * [RecognitionListener.onBufferReceived] - we feed that same audio into Picovoice Eagle to
- * figure out *who* is speaking, without needing a second microphone recording session.
- * When a recognized transcript contains "Digga" and Eagle confidently attributed the
- * utterance to an enrolled person, that person is booked 50 cents.
+ * [RecognitionListener.onBufferReceived] - we feed that same audio into our own
+ * [SpeakerIdentifier] to figure out *who* is speaking, without needing a second
+ * microphone recording session. When a recognized transcript contains "Digga" and a
+ * speaker was confidently identified, that person is booked 50 cents.
  */
 class ListeningService : Service() {
 
@@ -38,7 +38,7 @@ class ListeningService : Service() {
 
     private lateinit var repository: PersonRepository
     private var speechRecognizer: SpeechRecognizer? = null
-    private var eagleRecognizer: EagleSpeakerId.Recognizer? = null
+    private var speakerIdentifier: SpeakerIdentifier? = null
 
     private val pendingPcm = ArrayDeque<Short>()
     private val speakerCounts = HashMap<Long, Int>()
@@ -58,8 +58,20 @@ class ListeningService : Service() {
                     .associate { it.id to java.io.File(it.voiceProfilePath!!) }
 
                 withContext(Dispatchers.Main) {
-                    eagleRecognizer = EagleSpeakerId.Recognizer(applicationContext, profileFiles)
-                    startRecognizer()
+                    try {
+                        // No enrolled voices yet -> nobody to attribute "Digga" to.
+                        if (profileFiles.isNotEmpty()) {
+                            speakerIdentifier = SpeakerIdentifier(applicationContext, profileFiles)
+                        }
+                        startRecognizer()
+                    } catch (e: Exception) {
+                        android.widget.Toast.makeText(
+                            this@ListeningService,
+                            "Zuhören konnte nicht gestartet werden: ${e.message}",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        stopSelf()
+                    }
                 }
             }
         }
@@ -74,7 +86,7 @@ class ListeningService : Service() {
         serviceScope.cancel()
         speechRecognizer?.destroy()
         speechRecognizer = null
-        eagleRecognizer?.close()
+        speakerIdentifier = null
     }
 
     private fun startRecognizer() {
@@ -108,7 +120,7 @@ class ListeningService : Service() {
 
         override fun onBufferReceived(buffer: ByteArray?) {
             buffer ?: return
-            feedEagle(bytesToShorts(buffer))
+            feedSpeakerIdentifier(bytesToShorts(buffer))
         }
 
         override fun onError(error: Int) {
@@ -132,17 +144,21 @@ class ListeningService : Service() {
         }
     }
 
-    private fun feedEagle(newSamples: ShortArray) {
-        val eagle = eagleRecognizer ?: return
-        val frameLength = eagle.frameLength
-        if (frameLength <= 0) return
+    private fun feedSpeakerIdentifier(newSamples: ShortArray) {
+        val identifier = speakerIdentifier ?: return
+        val frameLength = identifier.frameLength
 
-        pendingPcm.addAll(newSamples.toList())
-        while (pendingPcm.size >= frameLength) {
-            val frame = ShortArray(frameLength) { pendingPcm.removeFirst() }
-            eagle.identifyFrame(frame)?.let { id ->
-                speakerCounts[id] = (speakerCounts[id] ?: 0) + 1
+        try {
+            pendingPcm.addAll(newSamples.toList())
+            while (pendingPcm.size >= frameLength) {
+                val frame = ShortArray(frameLength) { pendingPcm.removeFirst() }
+                identifier.identifyFrame(frame)?.let { id ->
+                    speakerCounts[id] = (speakerCounts[id] ?: 0) + 1
+                }
             }
+        } catch (e: Exception) {
+            // Don't let a transient error take the whole listening service down - this
+            // chunk's speaker just won't be identified.
         }
     }
 

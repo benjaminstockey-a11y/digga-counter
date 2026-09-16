@@ -3,6 +3,7 @@ package com.example.diggacounter.listening
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -39,6 +40,7 @@ class ListeningService : Service() {
     private lateinit var repository: PersonRepository
     private var speechRecognizer: SpeechRecognizer? = null
     private var speakerIdentifier: SpeakerIdentifier? = null
+    private val audioManager: AudioManager by lazy { getSystemService(AUDIO_SERVICE) as AudioManager }
 
     private val pendingPcm = ArrayDeque<Short>()
     private val speakerCounts = HashMap<Long, Int>()
@@ -87,6 +89,7 @@ class ListeningService : Service() {
         speechRecognizer?.destroy()
         speechRecognizer = null
         speakerIdentifier = null
+        setBeepMuted(false)
     }
 
     private fun startRecognizer() {
@@ -110,14 +113,38 @@ class ListeningService : Service() {
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
         }
+        // Mute the beep Android plays when recognition starts - we restart listening
+        // continuously, so without this it beeps constantly and sounds like it's
+        // crashing/restarting. Unmuted again once recognition has actually started.
+        setBeepMuted(true)
         speechRecognizer?.startListening(intent)
     }
 
+    /** Best-effort mute/unmute of the stream the system recognition start/end beep plays
+     * on - varies a bit by device/OEM, so we cover the two most common ones. */
+    private fun setBeepMuted(muted: Boolean) {
+        try {
+            val direction = if (muted) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE
+            audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, 0)
+            audioManager.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, direction, 0)
+        } catch (e: Exception) {
+            // Some devices/streams refuse programmatic mute - not worth crashing over.
+        }
+    }
+
     private val recognitionListener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {}
+        override fun onReadyForSpeech(params: Bundle?) {
+            // Start beep has played (or was suppressed) by now - unmute so the person's
+            // own environment sounds normal while they're actually talking.
+            setBeepMuted(false)
+        }
         override fun onBeginningOfSpeech() {}
         override fun onRmsChanged(rmsdB: Float) {}
-        override fun onEndOfSpeech() {}
+        override fun onEndOfSpeech() {
+            // The end-of-speech beep plays right around here, before onResults/onError -
+            // mute again so that one is suppressed too.
+            setBeepMuted(true)
+        }
         override fun onEvent(eventType: Int, params: Bundle?) {}
         override fun onPartialResults(partialResults: Bundle?) {}
 
@@ -127,12 +154,14 @@ class ListeningService : Service() {
         }
 
         override fun onError(error: Int) {
+            setBeepMuted(false)
             // Recognizer stops listening on error (including plain silence timeouts) -
             // just restart so the service keeps listening continuously.
             mainHandler.postDelayed({ listenOnce() }, 250)
         }
 
         override fun onResults(results: Bundle?) {
+            setBeepMuted(false)
             val alternatives = results
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.map { it.lowercase() }

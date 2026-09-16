@@ -44,6 +44,7 @@ class ListeningService : Service() {
 
     private val pendingPcm = ArrayDeque<Short>()
     private val speakerCounts = HashMap<Long, Int>()
+    private var samplesReceivedThisUtterance = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -103,6 +104,7 @@ class ListeningService : Service() {
     private fun listenOnce() {
         pendingPcm.clear()
         speakerCounts.clear()
+        samplesReceivedThisUtterance = 0
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
@@ -164,6 +166,7 @@ class ListeningService : Service() {
 
         override fun onBufferReceived(buffer: ByteArray?) {
             buffer ?: return
+            samplesReceivedThisUtterance += buffer.size / 2
             feedSpeakerIdentifier(bytesToShorts(buffer))
         }
 
@@ -181,12 +184,27 @@ class ListeningService : Service() {
                 ?.map { it.lowercase() }
                 ?: emptyList()
 
-            updateNotification(alternatives.firstOrNull())
-
-            if (alternatives.any { containsTriggerWord(it) }) {
-                speakerCounts.maxByOrNull { it.value }?.key?.let { speakerId ->
-                    serviceScope.launch { repository.registerDigga(speakerId) }
+            val heard = alternatives.firstOrNull()
+            val triggered = alternatives.any { containsTriggerWord(it) }
+            if (triggered) {
+                val matchedSpeaker = speakerCounts.maxByOrNull { it.value }?.key
+                if (matchedSpeaker != null) {
+                    serviceScope.launch { repository.registerDigga(matchedSpeaker) }
+                    updateNotification(heard, debugSuffix = " -> gebucht!")
+                } else {
+                    // "Digga" was heard but nobody could be confidently identified as the
+                    // speaker - the debug suffix says exactly why, so it's clear whether
+                    // this is a threshold/training issue or no raw audio was received at all.
+                    val identifier = speakerIdentifier
+                    val reason = when {
+                        identifier == null -> "keine Stimme trainiert"
+                        samplesReceivedThisUtterance == 0 -> "kein Audio-Buffer vom Gerät erhalten"
+                        else -> "beste Ähnlichkeit nur ${(identifier.lastBestScore * 100).toInt()}%"
+                    }
+                    updateNotification(heard, debugSuffix = " -> nicht gebucht ($reason)")
                 }
+            } else {
+                updateNotification(heard)
             }
             listenOnce()
         }
@@ -231,11 +249,11 @@ class ListeningService : Service() {
 
     /** Shows the last thing Android's recognizer actually understood - handy for checking
      * why "Digga" isn't being detected (wrong spelling heard, no speech captured, etc.). */
-    private fun updateNotification(lastHeard: String?) {
+    private fun updateNotification(lastHeard: String?, debugSuffix: String = "") {
         val text = if (lastHeard.isNullOrBlank()) {
             "Hört zu und zählt 'Digga' pro Person"
         } else {
-            "Zuletzt verstanden: \"$lastHeard\""
+            "Zuletzt verstanden: \"$lastHeard\"$debugSuffix"
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager?.notify(NOTIFICATION_ID, buildNotification(text))

@@ -17,6 +17,11 @@ class SpeakerIdentifier(context: Context, enrolledPersons: Map<Long, File>) {
     val frameLength: Int = AudioFeatures.FRAME_SIZE
     private val sampleRate = 16000 // matches what Android's SpeechRecognizer streams via onBufferReceived
 
+    /** Highest similarity score seen across all identifyFrame() calls so far, regardless of
+     * whether it cleared [matchThreshold] - purely for on-device diagnostics. */
+    var lastBestScore: Float = -1f
+        private set
+
     private val personIds: List<Long>
     private val profiles: List<FloatArray>
 
@@ -42,6 +47,7 @@ class SpeakerIdentifier(context: Context, enrolledPersons: Map<Long, File>) {
                 bestIndex = i
             }
         }
+        if (bestScore > lastBestScore) lastBestScore = bestScore
         return if (bestIndex >= 0 && bestScore >= matchThreshold) personIds[bestIndex] else null
     }
 }

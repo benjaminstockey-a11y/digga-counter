@@ -17,7 +17,7 @@ import java.io.File
 object VoiceTrainer {
 
     private const val SAMPLE_RATE = 16000
-    private const val TARGET_VOICED_FRAMES = 80 // ~5s of actual speech at 64ms/frame
+    private const val TARGET_VOICED_FRAMES = 280 // ~18s of actual speech at 64ms/frame - enough to read all prompts
 
     @SuppressLint("MissingPermission")
     suspend fun train(

@@ -1,15 +1,21 @@
 package com.example.diggacounter
 
 import android.Manifest
+import android.app.NotificationManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
@@ -47,6 +53,7 @@ class MainActivity : ComponentActivity() {
             var isListening by remember { mutableStateOf(false) }
             var trainingPerson by remember { mutableStateOf<Person?>(null) }
             var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
+            var showDndPrompt by remember { mutableStateOf(false) }
             val persons by viewModel.persons.collectAsState()
             val scope = rememberCoroutineScope()
 
@@ -76,9 +83,38 @@ class MainActivity : ComponentActivity() {
                                 return@PersonListScreen
                             }
                             isListening = !isListening
-                            if (isListening) ListeningService.start(this) else ListeningService.stop(this)
+                            if (isListening) {
+                                ListeningService.start(this)
+                                if (!hasDndAccess()) showDndPrompt = true
+                            } else {
+                                ListeningService.stop(this)
+                            }
                         }
                     )
+
+                    if (showDndPrompt) {
+                        AlertDialog(
+                            onDismissRequest = { showDndPrompt = false },
+                            title = { Text("Piepton beim Zuhören stummschalten") },
+                            text = {
+                                Text(
+                                    "Damit Android's Start-/Stopp-Signaltöne beim ständigen " +
+                                        "Neustarten der Spracherkennung nicht ständig zu hören sind, " +
+                                        "braucht die App Zugriff auf \"Nicht stören\". Das ist optional - " +
+                                        "ohne bleibt die App funktionsfähig, nur eben mit den Pieptönen."
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showDndPrompt = false
+                                    startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                                }) { Text("Einstellungen öffnen") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showDndPrompt = false }) { Text("Später") }
+                            }
+                        )
+                    }
 
                     trainingPerson?.let { person ->
                         VoiceTrainingDialog(
@@ -121,5 +157,10 @@ class MainActivity : ComponentActivity() {
                 this, Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
         return recordOk && notifOk
+    }
+
+    private fun hasDndAccess(): Boolean {
+        val manager = getSystemService(NotificationManager::class.java) ?: return false
+        return manager.isNotificationPolicyAccessGranted
     }
 }

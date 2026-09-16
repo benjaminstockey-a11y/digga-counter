@@ -121,15 +121,29 @@ class ListeningService : Service() {
     }
 
     /** Best-effort mute/unmute of the stream the system recognition start/end beep plays
-     * on - varies a bit by device/OEM, so we cover the two most common ones. */
+     * on - varies a bit by device/OEM, so we cover several candidates. Muting
+     * STREAM_SYSTEM/STREAM_RING (where the beep usually actually lives) only works once
+     * the user has granted "Do Not Disturb" access - without it Android silently ignores
+     * the request instead of throwing, so there's nothing else to detect/react to here. */
     private fun setBeepMuted(muted: Boolean) {
-        try {
-            val direction = if (muted) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE
-            audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, 0)
-            audioManager.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, direction, 0)
-        } catch (e: Exception) {
-            // Some devices/streams refuse programmatic mute - not worth crashing over.
+        val direction = if (muted) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE
+        val streams = mutableListOf(AudioManager.STREAM_MUSIC, AudioManager.STREAM_NOTIFICATION)
+        if (hasDndAccess()) {
+            streams += AudioManager.STREAM_SYSTEM
+            streams += AudioManager.STREAM_RING
         }
+        for (stream in streams) {
+            try {
+                audioManager.adjustStreamVolume(stream, direction, 0)
+            } catch (e: Exception) {
+                // Some devices/streams refuse programmatic mute - not worth crashing over.
+            }
+        }
+    }
+
+    private fun hasDndAccess(): Boolean {
+        val manager = getSystemService(NotificationManager::class.java) ?: return false
+        return manager.isNotificationPolicyAccessGranted
     }
 
     private val recognitionListener = object : RecognitionListener {

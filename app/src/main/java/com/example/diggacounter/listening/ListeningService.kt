@@ -4,33 +4,44 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.core.app.NotificationCompat
 import com.example.diggacounter.Config
 import com.example.diggacounter.R
-import com.example.diggacounter.audio.AudioChunkRecorder
-import com.example.diggacounter.audio.toPcm16Bytes
 import com.example.diggacounter.data.AppDatabase
 import com.example.diggacounter.data.PersonRepository
 import com.example.diggacounter.speech.EagleSpeakerId
-import com.example.diggacounter.speech.GoogleSpeechClient
 import kotlinx.coroutines.*
 
 /**
- * Foreground service that listens continuously: records short audio chunks, runs each
- * chunk through Google Speech-to-Text (does it contain "Digga"?) and through Picovoice
- * Eagle (whose enrolled voice does it best match?), and books 50 cents to that person
- * when both agree.
+ * Foreground service that listens continuously using Android's built-in SpeechRecognizer
+ * (free, no Google Cloud account needed - prefers fully offline on-device recognition
+ * where the device has an offline language pack installed, otherwise falls back to
+ * Google's standard free voice recognition).
+ *
+ * SpeechRecognizer also hands us the raw 16-bit PCM audio it's listening to via
+ * [RecognitionListener.onBufferReceived] - we feed that same audio into Picovoice Eagle to
+ * figure out *who* is speaking, without needing a second microphone recording session.
+ * When a recognized transcript contains "Digga" and Eagle confidently attributed the
+ * utterance to an enrolled person, that person is booked 50 cents.
  */
 class ListeningService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var job: Job? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var repository: PersonRepository
-    private val recorder = AudioChunkRecorder()
-    private val speechClient = GoogleSpeechClient()
-    private var recognizer: EagleSpeakerId.Recognizer? = null
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var eagleRecognizer: EagleSpeakerId.Recognizer? = null
+
+    private val pendingPcm = ArrayDeque<Short>()
+    private val speakerCounts = HashMap<Long, Int>()
 
     override fun onCreate() {
         super.onCreate()
@@ -39,8 +50,18 @@ class ListeningService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
-        if (job?.isActive != true) {
-            job = serviceScope.launch { listenLoop() }
+        if (speechRecognizer == null) {
+            serviceScope.launch {
+                val persons = repository.getAll()
+                val profileFiles = persons
+                    .filter { it.voiceProfilePath != null }
+                    .associate { it.id to java.io.File(it.voiceProfilePath!!) }
+
+                withContext(Dispatchers.Main) {
+                    eagleRecognizer = EagleSpeakerId.Recognizer(applicationContext, profileFiles)
+                    startRecognizer()
+                }
+            }
         }
         return START_STICKY
     }
@@ -49,58 +70,90 @@ class ListeningService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        job?.cancel()
-        recorder.stop()
-        recognizer?.close()
+        mainHandler.removeCallbacksAndMessages(null)
+        serviceScope.cancel()
+        speechRecognizer?.destroy()
+        speechRecognizer = null
+        eagleRecognizer?.close()
     }
 
-    private suspend fun listenLoop() {
-        val persons = repository.getAll()
-        val profileFiles = persons
-            .filter { it.voiceProfilePath != null }
-            .associate { it.id to java.io.File(it.voiceProfilePath!!) }
+    private fun startRecognizer() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) return
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
+            setRecognitionListener(recognitionListener)
+        }
+        listenOnce()
+    }
 
-        recognizer = EagleSpeakerId.Recognizer(applicationContext, profileFiles)
-        recorder.start()
+    private fun listenOnce() {
+        pendingPcm.clear()
+        speakerCounts.clear()
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+        }
+        speechRecognizer?.startListening(intent)
+    }
 
-        try {
-            while (currentCoroutineContext().isActive) {
-                val chunk = recorder.readChunk()
+    private val recognitionListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {}
+        override fun onBeginningOfSpeech() {}
+        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onEndOfSpeech() {}
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+        override fun onPartialResults(partialResults: Bundle?) {}
 
-                // 1) Who spoke in this chunk? Split into Eagle-sized frames and take the
-                //    speaker identified most often across those frames.
-                val speakerId = identifySpeaker(chunk)
+        override fun onBufferReceived(buffer: ByteArray?) {
+            buffer ?: return
+            feedEagle(bytesToShorts(buffer))
+        }
 
-                // 2) What was said? Send the same chunk to Google Speech-to-Text.
-                val transcript = speechClient.recognize(chunk.toPcm16Bytes(), recorder.sampleRateUsed())
+        override fun onError(error: Int) {
+            // Recognizer stops listening on error (including plain silence timeouts) -
+            // just restart so the service keeps listening continuously.
+            mainHandler.postDelayed({ listenOnce() }, 250)
+        }
 
-                if (speakerId != null && transcript != null &&
-                    transcript.contains(Config.TRIGGER_WORD, ignoreCase = true)
-                ) {
-                    repository.registerDigga(speakerId)
+        override fun onResults(results: Bundle?) {
+            val transcript = results
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+                ?.lowercase()
+
+            if (transcript != null && transcript.contains(Config.TRIGGER_WORD)) {
+                speakerCounts.maxByOrNull { it.value }?.key?.let { speakerId ->
+                    serviceScope.launch { repository.registerDigga(speakerId) }
                 }
             }
-        } finally {
-            recorder.stop()
-            recognizer?.close()
+            listenOnce()
         }
     }
 
-    private fun identifySpeaker(chunk: ShortArray): Long? {
-        val eagle = recognizer ?: return null
+    private fun feedEagle(newSamples: ShortArray) {
+        val eagle = eagleRecognizer ?: return
         val frameLength = eagle.frameLength
-        if (frameLength <= 0) return null
+        if (frameLength <= 0) return
 
-        val counts = HashMap<Long, Int>()
-        var offset = 0
-        while (offset + frameLength <= chunk.size) {
-            val frame = chunk.copyOfRange(offset, offset + frameLength)
+        pendingPcm.addAll(newSamples.toList())
+        while (pendingPcm.size >= frameLength) {
+            val frame = ShortArray(frameLength) { pendingPcm.removeFirst() }
             eagle.identifyFrame(frame)?.let { id ->
-                counts[id] = (counts[id] ?: 0) + 1
+                speakerCounts[id] = (speakerCounts[id] ?: 0) + 1
             }
-            offset += frameLength
         }
-        return counts.maxByOrNull { it.value }?.key
+    }
+
+    private fun bytesToShorts(bytes: ByteArray): ShortArray {
+        val shorts = ShortArray(bytes.size / 2)
+        for (i in shorts.indices) {
+            val lo = bytes[i * 2].toInt() and 0xFF
+            val hi = bytes[i * 2 + 1].toInt()
+            shorts[i] = ((hi shl 8) or lo).toShort()
+        }
+        return shorts
     }
 
     private fun buildNotification(): Notification {

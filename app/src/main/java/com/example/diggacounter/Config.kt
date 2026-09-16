@@ -7,10 +7,6 @@ package com.example.diggacounter
  * Speech-to-Text through your own backend instead.
  */
 object Config {
-    // Create at https://console.cloud.google.com -> APIs & Services -> Credentials,
-    // after enabling the "Cloud Speech-to-Text API" on the project.
-    const val GOOGLE_SPEECH_API_KEY = "PUT_YOUR_GOOGLE_CLOUD_API_KEY_HERE"
-
     // Create a free AccessKey at https://console.picovoice.ai
     const val PICOVOICE_ACCESS_KEY = "PUT_YOUR_PICOVOICE_ACCESS_KEY_HERE"
 

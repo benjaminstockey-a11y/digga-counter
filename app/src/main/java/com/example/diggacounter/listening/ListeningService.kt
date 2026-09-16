@@ -103,8 +103,11 @@ class ListeningService : Service() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            // Prefer online recognition: it has a much bigger vocabulary than the offline
+            // model and recognizes slang words like "Digga" more reliably.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
         }
         speechRecognizer?.startListening(intent)
@@ -130,18 +133,29 @@ class ListeningService : Service() {
         }
 
         override fun onResults(results: Bundle?) {
-            val transcript = results
+            val alternatives = results
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-                ?.lowercase()
+                ?.map { it.lowercase() }
+                ?: emptyList()
 
-            if (transcript != null && transcript.contains(Config.TRIGGER_WORD)) {
+            updateNotification(alternatives.firstOrNull())
+
+            if (alternatives.any { containsTriggerWord(it) }) {
                 speakerCounts.maxByOrNull { it.value }?.key?.let { speakerId ->
                     serviceScope.launch { repository.registerDigga(speakerId) }
                 }
             }
             listenOnce()
         }
+    }
+
+    /**
+     * Android's speech recognizer often mishears slang like "Digga" - check the configured
+     * trigger word plus a few common misheard spellings, not just an exact substring match.
+     */
+    private fun containsTriggerWord(transcript: String): Boolean {
+        val variants = listOf(Config.TRIGGER_WORD, "digger", "dicka", "ticka", "diggah", "diggar")
+        return variants.any { transcript.contains(it) }
     }
 
     private fun feedSpeakerIdentifier(newSamples: ShortArray) {
@@ -172,7 +186,19 @@ class ListeningService : Service() {
         return shorts
     }
 
-    private fun buildNotification(): Notification {
+    /** Shows the last thing Android's recognizer actually understood - handy for checking
+     * why "Digga" isn't being detected (wrong spelling heard, no speech captured, etc.). */
+    private fun updateNotification(lastHeard: String?) {
+        val text = if (lastHeard.isNullOrBlank()) {
+            "Hört zu und zählt 'Digga' pro Person"
+        } else {
+            "Zuletzt verstanden: \"$lastHeard\""
+        }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.notify(NOTIFICATION_ID, buildNotification(text))
+    }
+
+    private fun buildNotification(contentText: String = "Hört zu und zählt 'Digga' pro Person"): Notification {
         val channelId = "digga_listening"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = getSystemService(NotificationManager::class.java)
@@ -184,7 +210,7 @@ class ListeningService : Service() {
         }
         return NotificationCompat.Builder(this, channelId)
             .setContentTitle("Digga Counter läuft")
-            .setContentText("Hört zu und zählt 'Digga' pro Person")
+            .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_mic)
             .setOngoing(true)
             .build()

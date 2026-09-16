@@ -18,6 +18,7 @@ import com.example.diggacounter.R
 import com.example.diggacounter.data.AppDatabase
 import com.example.diggacounter.data.PersonRepository
 import com.example.diggacounter.speech.SpeakerIdentifier
+import com.example.diggacounter.speech.SpeakerTracker
 import kotlinx.coroutines.*
 
 /**
@@ -26,11 +27,12 @@ import kotlinx.coroutines.*
  * where the device has an offline language pack installed, otherwise falls back to
  * Google's standard free voice recognition).
  *
- * SpeechRecognizer also hands us the raw 16-bit PCM audio it's listening to via
- * [RecognitionListener.onBufferReceived] - we feed that same audio into our own
- * [SpeakerIdentifier] to figure out *who* is speaking, without needing a second
- * microphone recording session. When a recognized transcript contains "Digga" and a
- * speaker was confidently identified, that person is booked 50 cents.
+ * Speaker identification runs from a *separate*, independent microphone recording
+ * ([SpeakerTracker]) rather than the recognizer's own audio: [RecognitionListener.onBufferReceived]
+ * is documented as optional and doesn't fire on every device, which left speaker ID
+ * completely blind on some phones. When a recognized transcript contains "Digga" and the
+ * tracker's rolling window confidently points to one enrolled person, that person is
+ * booked 50 cents.
  */
 class ListeningService : Service() {
 
@@ -40,11 +42,8 @@ class ListeningService : Service() {
     private lateinit var repository: PersonRepository
     private var speechRecognizer: SpeechRecognizer? = null
     private var speakerIdentifier: SpeakerIdentifier? = null
+    private var speakerTracker: SpeakerTracker? = null
     private val audioManager: AudioManager by lazy { getSystemService(AUDIO_SERVICE) as AudioManager }
-
-    private val pendingPcm = ArrayDeque<Short>()
-    private val speakerCounts = HashMap<Long, Int>()
-    private var samplesReceivedThisUtterance = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -64,7 +63,9 @@ class ListeningService : Service() {
                     try {
                         // No enrolled voices yet -> nobody to attribute "Digga" to.
                         if (profileFiles.isNotEmpty()) {
-                            speakerIdentifier = SpeakerIdentifier(applicationContext, profileFiles)
+                            val identifier = SpeakerIdentifier(applicationContext, profileFiles)
+                            speakerIdentifier = identifier
+                            speakerTracker = SpeakerTracker(identifier, serviceScope).apply { start() }
                         }
                         startRecognizer()
                     } catch (e: Exception) {
@@ -86,6 +87,8 @@ class ListeningService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         mainHandler.removeCallbacksAndMessages(null)
+        speakerTracker?.stop()
+        speakerTracker = null
         serviceScope.cancel()
         speechRecognizer?.destroy()
         speechRecognizer = null
@@ -102,9 +105,6 @@ class ListeningService : Service() {
     }
 
     private fun listenOnce() {
-        pendingPcm.clear()
-        speakerCounts.clear()
-        samplesReceivedThisUtterance = 0
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
@@ -163,12 +163,7 @@ class ListeningService : Service() {
         }
         override fun onEvent(eventType: Int, params: Bundle?) {}
         override fun onPartialResults(partialResults: Bundle?) {}
-
-        override fun onBufferReceived(buffer: ByteArray?) {
-            buffer ?: return
-            samplesReceivedThisUtterance += buffer.size / 2
-            feedSpeakerIdentifier(bytesToShorts(buffer))
-        }
+        override fun onBufferReceived(buffer: ByteArray?) {}
 
         override fun onError(error: Int) {
             setBeepMuted(false)
@@ -187,18 +182,16 @@ class ListeningService : Service() {
             val heard = alternatives.firstOrNull()
             val triggered = alternatives.any { containsTriggerWord(it) }
             if (triggered) {
-                val matchedSpeaker = speakerCounts.maxByOrNull { it.value }?.key
+                val tracker = speakerTracker
+                val matchedSpeaker = tracker?.mostLikelySpeaker()
                 if (matchedSpeaker != null) {
                     serviceScope.launch { repository.registerDigga(matchedSpeaker) }
                     updateNotification(heard, debugSuffix = " -> gebucht!")
                 } else {
-                    // "Digga" was heard but nobody could be confidently identified as the
-                    // speaker - the debug suffix says exactly why, so it's clear whether
-                    // this is a threshold/training issue or no raw audio was received at all.
                     val identifier = speakerIdentifier
                     val reason = when {
                         identifier == null -> "keine Stimme trainiert"
-                        samplesReceivedThisUtterance == 0 -> "kein Audio-Buffer vom Gerät erhalten"
+                        tracker == null || tracker.framesCaptured == 0 -> "eigene Audioaufnahme liefert keine Daten"
                         else -> "beste Ähnlichkeit nur ${(identifier.lastBestScore * 100).toInt()}%"
                     }
                     updateNotification(heard, debugSuffix = " -> nicht gebucht ($reason)")
@@ -220,34 +213,6 @@ class ListeningService : Service() {
             "dicker", "ticker", "diggeh", "diga", "digge"
         )
         return variants.any { transcript.contains(it) }
-    }
-
-    private fun feedSpeakerIdentifier(newSamples: ShortArray) {
-        val identifier = speakerIdentifier ?: return
-        val frameLength = identifier.frameLength
-
-        try {
-            pendingPcm.addAll(newSamples.toList())
-            while (pendingPcm.size >= frameLength) {
-                val frame = ShortArray(frameLength) { pendingPcm.removeFirst() }
-                identifier.identifyFrame(frame)?.let { id ->
-                    speakerCounts[id] = (speakerCounts[id] ?: 0) + 1
-                }
-            }
-        } catch (e: Exception) {
-            // Don't let a transient error take the whole listening service down - this
-            // chunk's speaker just won't be identified.
-        }
-    }
-
-    private fun bytesToShorts(bytes: ByteArray): ShortArray {
-        val shorts = ShortArray(bytes.size / 2)
-        for (i in shorts.indices) {
-            val lo = bytes[i * 2].toInt() and 0xFF
-            val hi = bytes[i * 2 + 1].toInt()
-            shorts[i] = ((hi shl 8) or lo).toShort()
-        }
-        return shorts
     }
 
     /** Shows the last thing Android's recognizer actually understood - handy for checking

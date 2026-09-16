@@ -84,9 +84,7 @@ class MainActivity : ComponentActivity() {
                                 // Jump straight to the "Do Not Disturb access" settings screen
                                 // if not granted yet - that's what lets the app silence the
                                 // recognizer's start/stop beep.
-                                if (!hasDndAccess()) {
-                                    startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
-                                }
+                                if (!hasDndAccess()) openDndAccessSettings()
                             } else {
                                 ListeningService.stop(this)
                             }
@@ -139,5 +137,17 @@ class MainActivity : ComponentActivity() {
     private fun hasDndAccess(): Boolean {
         val manager = getSystemService(NotificationManager::class.java) ?: return false
         return manager.isNotificationPolicyAccessGranted
+    }
+
+    /** Android has no public API to deep-link straight to one app's own DND-access toggle -
+     * only this general list of every app that has requested it. So we tell people exactly
+     * what to look for right before handing them off to it. */
+    private fun openDndAccessSettings() {
+        android.widget.Toast.makeText(
+            this,
+            "Gleich öffnet sich eine Liste - \"Digga Counter\" suchen und den Schalter aktivieren.",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+        startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
     }
 }

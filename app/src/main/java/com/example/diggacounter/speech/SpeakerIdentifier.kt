@@ -6,8 +6,13 @@ import java.io.File
 /** Matches live audio frames against every enrolled person's saved voiceprint. */
 class SpeakerIdentifier(context: Context, enrolledPersons: Map<Long, File>) {
 
-    /** Minimum cosine similarity (0.0-1.0) to accept a match instead of "unknown". */
-    private val matchThreshold = 0.90f
+    /** Minimum cosine similarity (0.0-1.0) to accept a match instead of "unknown".
+     * Kept fairly low because this simple hand-rolled feature vector doesn't reproduce
+     * as consistently between enrollment and real-world runtime audio (different mic
+     * gain/environment/background noise) as a trained embedding model would - a strict
+     * threshold like 0.9 essentially never matches anyone, so "Digga" gets recognized as
+     * a word but never attributed to a person. */
+    private val matchThreshold = 0.45f
 
     val frameLength: Int = AudioFeatures.FRAME_SIZE
     private val sampleRate = 16000 // matches what Android's SpeechRecognizer streams via onBufferReceived

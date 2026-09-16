@@ -11,11 +11,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
@@ -53,7 +50,6 @@ class MainActivity : ComponentActivity() {
             var isListening by remember { mutableStateOf(false) }
             var trainingPerson by remember { mutableStateOf<Person?>(null) }
             var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
-            var showDndPrompt by remember { mutableStateOf(false) }
             val persons by viewModel.persons.collectAsState()
             val scope = rememberCoroutineScope()
 
@@ -85,36 +81,17 @@ class MainActivity : ComponentActivity() {
                             isListening = !isListening
                             if (isListening) {
                                 ListeningService.start(this)
-                                if (!hasDndAccess()) showDndPrompt = true
+                                // Jump straight to the "Do Not Disturb access" settings screen
+                                // if not granted yet - that's what lets the app silence the
+                                // recognizer's start/stop beep.
+                                if (!hasDndAccess()) {
+                                    startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                                }
                             } else {
                                 ListeningService.stop(this)
                             }
                         }
                     )
-
-                    if (showDndPrompt) {
-                        AlertDialog(
-                            onDismissRequest = { showDndPrompt = false },
-                            title = { Text("Piepton beim Zuhören stummschalten") },
-                            text = {
-                                Text(
-                                    "Damit Android's Start-/Stopp-Signaltöne beim ständigen " +
-                                        "Neustarten der Spracherkennung nicht ständig zu hören sind, " +
-                                        "braucht die App Zugriff auf \"Nicht stören\". Das ist optional - " +
-                                        "ohne bleibt die App funktionsfähig, nur eben mit den Pieptönen."
-                                )
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showDndPrompt = false
-                                    startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
-                                }) { Text("Einstellungen öffnen") }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showDndPrompt = false }) { Text("Später") }
-                            }
-                        )
-                    }
 
                     trainingPerson?.let { person ->
                         VoiceTrainingDialog(

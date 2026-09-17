@@ -1,12 +1,9 @@
 package com.example.diggacounter
 
 import android.Manifest
-import android.app.NotificationManager
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,10 +13,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.example.diggacounter.data.Person
 import com.example.diggacounter.listening.ListeningService
 import com.example.diggacounter.ui.DiggaViewModel
 import com.example.diggacounter.ui.PersonListScreen
 import com.example.diggacounter.ui.UpdateAvailableDialog
+import com.example.diggacounter.ui.WakeWordTrainingDialog
 import com.example.diggacounter.update.ApkInstaller
 import com.example.diggacounter.update.UpdateChecker
 import com.example.diggacounter.update.UpdateInfo
@@ -46,6 +45,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var isListening by remember { mutableStateOf(false) }
+            var trainingPerson by remember { mutableStateOf<Person?>(null) }
             var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
             val persons by viewModel.persons.collectAsState()
             val scope = rememberCoroutineScope()
@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
                         onAddPerson = viewModel::addPerson,
                         onDeletePerson = viewModel::deletePerson,
                         onAdjust = { person, steps -> viewModel.adjustBalance(person.id, steps) },
+                        onTrainWakeWord = { person -> trainingPerson = person },
                         onToggleListening = {
                             if (!hasRequiredPermissions()) {
                                 requestPermissions.launch(
@@ -75,17 +76,21 @@ class MainActivity : ComponentActivity() {
                                 return@PersonListScreen
                             }
                             isListening = !isListening
-                            if (isListening) {
-                                ListeningService.start(this)
-                                // Jump straight to the "Do Not Disturb access" settings screen
-                                // if not granted yet - that's what lets the app silence the
-                                // recognizer's start/stop beep.
-                                if (!hasDndAccess()) openDndAccessSettings()
-                            } else {
-                                ListeningService.stop(this)
-                            }
+                            if (isListening) ListeningService.start(this) else ListeningService.stop(this)
                         }
                     )
+
+                    trainingPerson?.let { person ->
+                        WakeWordTrainingDialog(
+                            personId = person.id,
+                            personName = person.name,
+                            onDone = { path ->
+                                viewModel.setVoiceProfilePath(person.id, path)
+                                trainingPerson = null
+                            },
+                            onDismiss = { trainingPerson = null }
+                        )
+                    }
 
                     availableUpdate?.let { update ->
                         UpdateAvailableDialog(
@@ -116,22 +121,5 @@ class MainActivity : ComponentActivity() {
                 this, Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
         return recordOk && notifOk
-    }
-
-    private fun hasDndAccess(): Boolean {
-        val manager = getSystemService(NotificationManager::class.java) ?: return false
-        return manager.isNotificationPolicyAccessGranted
-    }
-
-    /** Android has no public API to deep-link straight to one app's own DND-access toggle -
-     * only this general list of every app that has requested it. So we tell people exactly
-     * what to look for right before handing them off to it. */
-    private fun openDndAccessSettings() {
-        android.widget.Toast.makeText(
-            this,
-            "Gleich öffnet sich eine Liste - \"Digga Counter\" suchen und den Schalter aktivieren.",
-            android.widget.Toast.LENGTH_LONG
-        ).show()
-        startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
     }
 }
